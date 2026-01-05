@@ -1,13 +1,42 @@
 {
   "name": "@dynamic-framework/vite-plugin-transform-dynamic-imports",
   "version": "0.1.0",
+  "description": "Vite plugin that transforms dynamic imports to use runtime-configurable base paths for widget delivery",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "vite",
+    "vite-plugin",
+    "dynamic-imports",
+    "code-splitting",
+    "widgets",
+    "modyo",
+    "rollup"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports.git"
+  },
+  "homepage": "https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports#readme",
+  "bugs": {
+    "url": "https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/issues"
+  },
+  "license": "MIT",
+  "author": "Dynamic Framework Team",
   "publishConfig": {
     "access": "public"
   },
@@ -15,16 +44,19 @@
     "clear": "rm -rf dist",
     "build": "npm run clear && tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
-    "test": "vitest"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
   },
   "peerDependencies": {
-    "vite": ">=7.0.0"
+    "vite": ">=5.0.0"
+  },
+  "dependencies": {
+    "magic-string": "^0.30.21"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",
-    "vitest": "^4.0.15",
-    "magic-string": "^0.30.21"
+    "vitest": "^4.0.15"
   }
 }
