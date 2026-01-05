@@ -1,0 +1,55 @@
+name: Build and publish NPM
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          release-type: node
+          target-branch: master
+          config-file: release-please-config.json
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+        if: ${{ steps.release.outputs.release_created }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+        if: ${{ steps.release.outputs.release_created }}
+
+      - name: Update npm to latest version
+        run: npm install -g npm@latest
+        if: ${{ steps.release.outputs.release_created }}
+
+      - name: Check npm version
+        run: npm --version
+        if: ${{ steps.release.outputs.release_created }}
+
+      - name: Install dependencies
+        run: npm ci
+        if: ${{ steps.release.outputs.release_created }}
+
+      - name: Build
+        run: npm run build
+        if: ${{ steps.release.outputs.release_created }}
+
+      - name: Publish to NPM packages
+        run: npm publish --access public
+        if: ${{ steps.release.outputs.release_created }}
