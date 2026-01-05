@@ -1,0 +1,23 @@
+name: Labeler
+
+on:
+  pull_request:
+    branches:
+      - master
+      - develop
+    types: [
+      opened,
+      edited,
+      reopened,
+      synchronize
+    ]
+
+jobs:
+  pr-labeler:
+    name: Labeling Job
+    runs-on: ubuntu-latest
+    steps:
+      - uses: TimonVS/pr-labeler-action@v4
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml # optional, .github/pr-labeler.yml is the default value
