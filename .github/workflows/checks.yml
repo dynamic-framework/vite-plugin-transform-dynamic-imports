@@ -6,8 +6,8 @@ on:
       - master
       - develop
     types: [
-      opened, 
-      edited, 
+      opened,
+      edited,
       reopened, 
       synchronize
     ]
