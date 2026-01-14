@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/compare/0.2.0...0.2.1) (2026-01-14)
+
+
+### Bug Fixes
+
+* update installation command in README to correct package name ([02b5925](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/commit/02b5925ebac8148a31becb8720d0b33fabc73fa0))
+
 ## [0.2.0](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/compare/v0.1.0...0.2.0) (2026-01-13)
 
 
