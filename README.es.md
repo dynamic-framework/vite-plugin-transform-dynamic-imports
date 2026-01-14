@@ -14,7 +14,7 @@ Características:
 Instala como dependencia de desarrollo junto a Vite:
 
 ```bash
-npm install -D @dynamic-framework/dynamic-imports-vite-plugin
+npm install -D @dynamic-framework/vite-plugin-transform-dynamic-imports
 ```
 
 Peer dependency: vite ^7.2.6

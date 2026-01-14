@@ -14,7 +14,7 @@ Features:
 Install as a dev dependency alongside Vite:
 
 ```bash
-npm install -D @dynamic-framework/dynamic-imports-vite-plugin
+npm install -D @dynamic-framework/vite-plugin-transform-dynamic-imports
 ```
 
 Peer dependency: vite ^7.2.6
