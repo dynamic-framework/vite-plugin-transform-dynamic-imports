@@ -35,6 +35,26 @@ export function transformDynamicImports(
     
     generateBundle(_outputOptions, bundle: OutputBundle) {
       let totalTransformations = 0;
+
+      // ---- PASS 1: Collect entry CSS file names from viteMetadata ----
+      // Chunks import CSS that is already loaded via <link> in the entry page.
+      // These entry-level CSS files must be removed from __vite__mapDeps arrays
+      // so that the transformed assetsURL does not produce incorrect URLs for them.
+      const entryCssFiles: Set<string> = new Set();
+      for (const chunkOrAsset of Object.values(bundle)) {
+        if (chunkOrAsset.type === 'chunk') {
+          const c = chunkOrAsset as OutputChunk;
+          if (c.isEntry) {
+            // viteMetadata is attached by Vite's internal build-metadata plugin
+            const importedCss: string[] | undefined = (c as any).viteMetadata?.importedCss;
+            if (importedCss) {
+              for (const css of importedCss) {
+                entryCssFiles.add(css);
+              }
+            }
+          }
+        }
+      }
       
       // Process each chunk in the bundle
       for (const [fileName, chunkOrAsset] of Object.entries(bundle)) {
@@ -104,6 +124,55 @@ export function transformDynamicImports(
             
             s.overwrite(match.index, match.index + fullMatch.length, replacement);
             transformCount++;
+          }
+        }
+
+        // Pattern 3: Transform assetsURL in entry chunks
+        // Vite generates: assetsURL = function(B) { return "/" + B }
+        // This function is used by __vitePreload to resolve asset paths in __vite__mapDeps.
+        // In Modyo/other subfolder deployments, the "/" prefix resolves to the domain root
+        // instead of the widget subfolder. We override it to use the resource base path.
+        if (entryNamePredicate(chunk)) {
+          const assetsURLRegex = /assetsURL\s*=\s*function\s*\(\s*(\w+)\s*\)\s*\{\s*return\s*"\/"\s*\+\s*\1\s*;?\s*\}/g;
+          let assetsMatch: RegExpExecArray | null;
+          while ((assetsMatch = assetsURLRegex.exec(chunk.code)) !== null) {
+            const param = assetsMatch[1];
+            const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
+            const replacement = `assetsURL = function(${param}) { return ((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : '/') + ${param}; }`;
+            s.overwrite(assetsMatch.index, assetsMatch.index + assetsMatch[0].length, replacement);
+            transformCount++;
+          }
+        }
+
+        // Pattern 4: Remove entry-level CSS files from __vite__mapDeps arrays
+        // Entry CSS files (e.g. "main.css") are already loaded via <link> in the HTML page.
+        // After Pattern 3 transforms assetsURL to use resourceBasePath, keeping them in
+        // the array would cause incorrect URL resolution (e.g. resourceBasePath + "main.css"
+        // instead of the root-level CSS file). We filter them out entirely.
+        if (entryCssFiles.size > 0 && fileName.includes(chunkFilePattern)) {
+          // Match the m.f initialization part of __vite__mapDeps:
+          //   const __vite__mapDeps=(..., d=(m.f||(m.f=["a.css","b.css"])))=>...
+          // Or multi-line variant:
+          //   const __vite__mapDeps=(..., d=(m.f||(m.f=[
+          //     "a.css",
+          //     "b.css"
+          //   ])))=>...
+          const depsArrayRegex = /m\.f\s*\|\|\s*\(m\.f\s*=\s*(\[[\s\S]*?\])\s*\)/g;
+          let depsMatch: RegExpExecArray | null;
+          while ((depsMatch = depsArrayRegex.exec(chunk.code)) !== null) {
+            const arrayStr = depsMatch[1];
+            try {
+              const deps: string[] = JSON.parse(arrayStr);
+              const filtered = deps.filter(dep => !entryCssFiles.has(dep));
+              if (filtered.length < deps.length) {
+                const newArrayStr = JSON.stringify(filtered);
+                const arrayStart = depsMatch.index + depsMatch[0].indexOf(arrayStr);
+                s.overwrite(arrayStart, arrayStart + arrayStr.length, newArrayStr);
+                transformCount++;
+              }
+            } catch {
+              // Silently skip if the array is not parseable JSON (unlikely in Vite output)
+            }
           }
         }
 
