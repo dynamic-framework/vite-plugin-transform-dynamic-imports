@@ -1,16 +1,25 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import myPlugin from '../src';
 import type { OutputBundle, OutputChunk } from 'rollup';
 
 // writeBundle needs a real output directory to write transformed files back to
 // (Rollup has already written the untransformed files to disk by the time
 // writeBundle runs, so the plugin must overwrite them itself).
+const createdTempDirs: string[] = [];
 function makeOutputOptions() {
-  return { dir: mkdtempSync(join(tmpdir(), 'transform-dynamic-imports-test-')) } as any;
+  const dir = mkdtempSync(join(tmpdir(), 'transform-dynamic-imports-test-'));
+  createdTempDirs.push(dir);
+  return { dir } as any;
 }
+
+afterAll(() => {
+  for (const dir of createdTempDirs) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function makeChunk(code: string, fileName: string, extra: Partial<OutputChunk> = {}): [string, OutputChunk] {
   const chunk: OutputChunk = {
@@ -51,7 +60,7 @@ describe('myPlugin', () => {
     plugin.writeBundle!.call({ warn: () => {} } as any, makeOutputOptions(), bundle);
 
     const out = (bundle[fileName] as OutputChunk).code;
-    expect(out).toMatch(/import\(\(\(typeof window !== 'undefined' && window\) \? .* \: ''\) \+ 'file.chunk.js'\)/);
+    expect(out).toMatch(/import\(\(typeof window !== 'undefined' && window\) \? \(.* \+ 'file\.chunk\.js'\) \: '\.\/file\.chunk\.js'\)/);
   });
 
   it('transforms static import in chunk for entryFileName', () => {
@@ -173,7 +182,7 @@ describe('myPlugin', () => {
     const chunkOut = (bundle[chunkName] as OutputChunk).code;
 
     // Pattern 1: dynamic import in entry chunk rewritten despite no ".chunk.js" suffix
-    expect(entryOut).toMatch(/import\(\(\(typeof window !== 'undefined' && window\) \? .* \: ''\) \+ 'Primary-dU_amVVv\.js'\)/);
+    expect(entryOut).toMatch(/import\(\(typeof window !== 'undefined' && window\) \? \(.* \+ 'Primary-dU_amVVv\.js'\) \: '\.\/Primary-dU_amVVv\.js'\)/);
     // Pattern 3: assetsURL still rewritten
     expect(entryOut).toMatch(/resourceBasePath-{{widget\.wid}}/);
     // Pattern 2: static import from entry file rewritten in the non-suffixed chunk file

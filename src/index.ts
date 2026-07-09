@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import MagicString from 'magic-string';
 import type { OutputBundle, OutputChunk } from 'rollup';
 import type { Plugin } from 'vite';
@@ -62,11 +62,17 @@ export function transformDynamicImports(
     // the time `writeBundle` runs, we write the transformed content back out ourselves.
     writeBundle(outputOptions, bundle: OutputBundle) {
       let totalTransformations = 0;
-      const outDir = outputOptions.dir;
+      // Rollup/Vite normally set `outputOptions.dir` for code-split builds (which is the
+      // only scenario where this plugin is useful, since dynamic-import/mapDeps rewriting
+      // requires multiple emitted chunks). `outputOptions.file` (single-file output) is
+      // mutually exclusive with code-splitting in Rollup, so it shouldn't occur in
+      // practice here, but we fall back to its directory defensively rather than
+      // silently no-op'ing.
+      const outDir = outputOptions.dir ?? (outputOptions.file ? dirname(outputOptions.file) : undefined);
       if (!outDir) {
         this.warn(
-          'transform-dynamic-imports: could not determine output directory (outputOptions.dir is unset); ' +
-          'skipping post-build transformations.'
+          'transform-dynamic-imports: could not determine output directory ' +
+          '(outputOptions.dir and outputOptions.file are both unset); skipping post-build transformations.'
         );
         return;
       }
@@ -147,12 +153,16 @@ export function transformDynamicImports(
             const chunkName = chunkPath.replace('./', '');
             
             // Generate SSR-safe replacement
-            // Uses typeof guard to prevent window access in SSR contexts
+            // Uses typeof guard to prevent window access in SSR contexts. When `window`
+            // isn't available we fall back to the original relative specifier
+            // (`./chunkName`) rather than a bare filename, since `import('foo.js')` is not
+            // equivalent to `import('./foo.js')` and can fail to resolve relative to the
+            // importing module.
             // TODO: Add sanitization/validation for resourceBasePath at runtime to prevent 
             // path traversal attacks if the global variable can be user-influenced.
             // Consider implementing: path normalization, allowlist checking, or CSP headers.
             const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
-            const replacement = `import(((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : '') + ${quote}${chunkName}${quote})`;
+            const replacement = `import((typeof window !== 'undefined' && window) ? (${resourceBaseRef} + ${quote}${chunkName}${quote}) : ${quote}${chunkPath}${quote})`;
             
             s.overwrite(match.index, match.index + fullMatch.length, replacement);
             transformCount++;
@@ -320,11 +330,15 @@ export function transformDynamicImports(
             });
             // MagicString's SourceMap is compatible with Rollup's SourceMap
             chunk.map = map as unknown as typeof chunk.map;
+
+            // Rollup already wrote the stale `.map` file (matching the pre-transform code)
+            // to disk during the write phase. Flush the regenerated map too, or the
+            // sourceMappingURL comment left in `chunk.code` will point to an out-of-sync
+            // source map.
+            writeFileSync(join(outDir, `${fileName}.map`), map.toString(), 'utf-8');
           }
 
-          if (outDir) {
-            writeFileSync(join(outDir, fileName), chunk.code, 'utf-8');
-          }
+          writeFileSync(join(outDir, fileName), chunk.code, 'utf-8');
           
           this.warn(
             `Transformed ${transformCount} import(s) in ${fileName}`
