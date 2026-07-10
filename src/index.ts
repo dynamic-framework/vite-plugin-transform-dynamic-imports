@@ -300,12 +300,15 @@ export function transformDynamicImports(
         // instead. We scan every chunk rather than gating on `entryNamePredicate` so this
         // keeps working regardless of where Rollup/Vite places the helper.
         {
-          const assetsURLRegex = /assetsURL\s*=\s*function\s*\(\s*(\w+)\s*\)\s*\{\s*return\s*"\/"\s*\+\s*\1\s*;?\s*\}/g;
+          const assetsURLRegex = new RegExp(
+            `assetsURL\\s*=\\s*function\\s*\\(\\s*(\\w+)\\s*\\)\\s*\\{\\s*return\\s*"${escapedBase}"\\s*\\+\\s*\\1\\s*;?\\s*\\}`,
+            'g'
+          );
           let assetsMatch: RegExpExecArray | null;
           while ((assetsMatch = assetsURLRegex.exec(chunk.code)) !== null) {
             const param = assetsMatch[1];
             const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
-            const replacement = `assetsURL = function(${param}) { return ((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : '/') + ${param}; }`;
+            const replacement = `assetsURL = function(${param}) { return ((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : '${resolvedBase}') + ${param}; }`;
             s.overwrite(assetsMatch.index, assetsMatch.index + assetsMatch[0].length, replacement);
             transformCount++;
           }
@@ -389,21 +392,25 @@ export function transformDynamicImports(
         // use the resource base path at runtime instead, falling back to the original
         // base when `window` isn't available (SSR).
         if (staticAssetFiles.size > 0) {
-          for (const assetFileName of staticAssetFiles) {
-            const escapedAssetFileName = assetFileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const assetUrlRegex = new RegExp(
-              `([\\x60'"])${escapedBase}${escapedAssetFileName}\\1`,
-              'g'
-            );
-            let assetUrlMatch: RegExpExecArray | null;
-            while ((assetUrlMatch = assetUrlRegex.exec(chunk.code)) !== null) {
-              const fullMatch = assetUrlMatch[0];
-              const quote = assetUrlMatch[1];
-              const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
-              const replacement = `(((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : ${quote}${resolvedBase}${quote}) + ${quote}${assetFileName}${quote})`;
-              s.overwrite(assetUrlMatch.index, assetUrlMatch.index + fullMatch.length, replacement);
-              transformCount++;
-            }
+          // Single alternation regex (one scan per chunk) instead of one regex per known
+          // asset filename (O(chunks x assets x code)) — this matters for builds with many
+          // images/fonts, where re-scanning every chunk's code once per asset adds up.
+          const escapedAssetFileNames = Array.from(staticAssetFiles, name =>
+            name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          );
+          const assetUrlRegex = new RegExp(
+            `([\\x60'"])${escapedBase}(${escapedAssetFileNames.join('|')})\\1`,
+            'g'
+          );
+          let assetUrlMatch: RegExpExecArray | null;
+          while ((assetUrlMatch = assetUrlRegex.exec(chunk.code)) !== null) {
+            const fullMatch = assetUrlMatch[0];
+            const quote = assetUrlMatch[1];
+            const assetFileName = assetUrlMatch[2];
+            const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
+            const replacement = `(((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : ${quote}${resolvedBase}${quote}) + ${quote}${assetFileName}${quote})`;
+            s.overwrite(assetUrlMatch.index, assetUrlMatch.index + fullMatch.length, replacement);
+            transformCount++;
           }
         }
 

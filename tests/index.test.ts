@@ -105,6 +105,32 @@ describe('myPlugin', () => {
     expect(out).toContain("assetsURL = function(B) {");
   });
 
+  it('transforms assetsURL when the Vite config uses a non-default base path', () => {
+    // Regression test: Vite bakes `config.base` into the assetsURL string literal
+    // (e.g. `return "/my-base/" + B` instead of `return "/" + B`). The regex used to
+    // detect this pattern was hard-coded to only match a bare "/" prefix, silently
+    // no-op'ing (and reintroducing 404s) for any consumer project with a custom `base`.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+
+    // @ts-expect-error calling the configResolved hook directly to set a custom base
+    plugin.configResolved!.call({} as any, { base: '/my-base/' } as any);
+
+    const code = `assetsURL = function(B) { return "/my-base/" + B }`;
+    const [fileName, chunk] = makeChunk(code, 'main.js', { isEntry: true });
+    const bundle: OutputBundle = { [fileName]: chunk } as unknown as OutputBundle;
+
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call({ warn: () => { } } as any, makeOutputOptions(), bundle);
+
+    const out = (bundle[fileName] as OutputChunk).code;
+    expect(out).toMatch(/typeof window !== 'undefined'/);
+    expect(out).toMatch(/resourceBasePath-{{widget.wid}}/);
+    expect(out).not.toContain(`return "/my-base/" + B`);
+    expect(out).toContain("assetsURL = function(B) {");
+    // SSR fallback should use the configured base, not a hard-coded '/'
+    expect(out).toContain(`: '/my-base/'`);
+  });
+
   it('removes entry JS/CSS files from __vite__mapDeps and remaps call-site indices', () => {
     const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
 
