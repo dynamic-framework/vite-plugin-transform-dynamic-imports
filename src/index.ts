@@ -255,10 +255,12 @@ export function transformDynamicImports(
         }
 
         // A "chunk file" here means any non-entry JS chunk emitted by Rollup/Vite, i.e.
-        // a lazily-loaded code-split file. We rely on `chunk.isEntry` (structural data
-        // Rollup always provides) rather than filename patterns like `chunkFilePattern`,
-        // since custom `chunkFileNames` naming conventions in the consuming project's
-        // Vite config can change or disappear independently of this plugin.
+        // a lazily-loaded code-split file. We rely on `entryNamePredicate` (which defaults
+        // to checking `chunk.isEntry`, structural data Rollup always provides) rather than
+        // filename patterns like `chunkFilePattern`, since custom `chunkFileNames` naming
+        // conventions in the consuming project's Vite config can change or disappear
+        // independently of this plugin, and `entryNamePredicate` can itself be overridden
+        // by consumers (e.g. for multi-entry/custom entry selection).
         const isChunkFile = !entryNamePredicate(chunk);
 
         // Pattern 2: Transform static imports from entry file in chunk files

@@ -26,8 +26,9 @@ export interface TransformDynamicImportsOptions {
 
   /**
    * @deprecated No longer used to detect chunk files (the plugin now relies on
-   * `chunk.isEntry` instead, which doesn't depend on any file naming convention).
-   * Kept only for backward compatibility with existing configs; has no effect.
+   * `entryNamePredicate` instead, which defaults to checking `chunk.isEntry` but can be
+   * overridden by consumers, e.g. for multi-entry/custom entry selection). Kept only for
+   * backward compatibility with existing configs; has no effect.
    */
   chunkFilePattern?: string;
 
