@@ -88,7 +88,7 @@ export function transformDynamicImports(
       for (const chunkOrAsset of Object.values(bundle)) {
         if (chunkOrAsset.type === 'chunk') {
           const c = chunkOrAsset as OutputChunk;
-          if (c.isEntry) {
+          if (entryNamePredicate(c)) {
             entryAssetFiles.add(c.fileName);
             // viteMetadata is attached by Vite's internal build-metadata plugin
             const importedCss: string[] | undefined = (c as any).viteMetadata?.importedCss;
@@ -130,7 +130,7 @@ export function transformDynamicImports(
       // resourceBasePath mechanism as Pattern 1.
       const nonEntryChunkFiles: Set<string> = new Set();
       for (const chunkOrAsset of Object.values(bundle)) {
-        if (chunkOrAsset.type === 'chunk' && !(chunkOrAsset as OutputChunk).isEntry) {
+        if (chunkOrAsset.type === 'chunk' && !entryNamePredicate(chunkOrAsset as OutputChunk)) {
           nonEntryChunkFiles.add(chunkOrAsset.fileName);
         }
       }
@@ -425,8 +425,12 @@ export function transformDynamicImports(
             // Rollup already wrote the stale `.map` file (matching the pre-transform code)
             // to disk during the write phase. Flush the regenerated map too, or the
             // sourceMappingURL comment left in `chunk.code` will point to an out-of-sync
-            // source map.
-            writeFileSync(join(outDir, `${fileName}.map`), map.toString(), 'utf-8');
+            // source map. Rollup can name the map file differently from `${fileName}.map`
+            // via `output.sourcemapFileNames`, and the sourceMappingURL comment in the
+            // emitted code reflects whatever name Rollup actually chose
+            // (`chunk.sourcemapFileName`), so we must write to that same path.
+            const mapFileName = chunk.sourcemapFileName ?? `${fileName}.map`;
+            writeFileSync(join(outDir, mapFileName), map.toString(), 'utf-8');
           }
 
           writeFileSync(join(outDir, fileName), chunk.code, 'utf-8');
