@@ -301,14 +301,17 @@ export function transformDynamicImports(
         // keeps working regardless of where Rollup/Vite places the helper.
         {
           const assetsURLRegex = new RegExp(
-            `assetsURL\\s*=\\s*function\\s*\\(\\s*(\\w+)\\s*\\)\\s*\\{\\s*return\\s*"${escapedBase}"\\s*\\+\\s*\\1\\s*;?\\s*\\}`,
+            `assetsURL\\s*=\\s*function\\s*\\(\\s*(\\w+)\\s*\\)\\s*\\{\\s*return\\s*([\\x60'"])${escapedBase}\\2\\s*\\+\\s*\\1\\s*;?\\s*\\}`,
             'g'
           );
           let assetsMatch: RegExpExecArray | null;
           while ((assetsMatch = assetsURLRegex.exec(chunk.code)) !== null) {
             const param = assetsMatch[1];
             const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
-            const replacement = `assetsURL = function(${param}) { return ((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : '${resolvedBase}') + ${param}; }`;
+            // JSON.stringify safely escapes resolvedBase for embedding as a JS string
+            // literal (handles quotes/backslashes it may contain), rather than naively
+            // interpolating it inside a hand-written single-quoted literal.
+            const replacement = `assetsURL = function(${param}) { return ((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : ${JSON.stringify(resolvedBase)}) + ${param}; }`;
             s.overwrite(assetsMatch.index, assetsMatch.index + assetsMatch[0].length, replacement);
             transformCount++;
           }

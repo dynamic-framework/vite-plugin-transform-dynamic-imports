@@ -127,8 +127,30 @@ describe('myPlugin', () => {
     expect(out).toMatch(/resourceBasePath-{{widget.wid}}/);
     expect(out).not.toContain(`return "/my-base/" + B`);
     expect(out).toContain("assetsURL = function(B) {");
-    // SSR fallback should use the configured base, not a hard-coded '/'
-    expect(out).toContain(`: '/my-base/'`);
+    // SSR fallback should use the configured base (JSON.stringify-escaped), not a
+    // hard-coded '/'
+    expect(out).toContain(`: "/my-base/"`);
+  });
+
+  it('transforms assetsURL when Vite emits the base literal with single quotes', () => {
+    // Regression test: assetsURLRegex previously only matched a double-quoted base
+    // literal (`return "..." + param`). Some minifiers/emitters may use single quotes
+    // or backticks instead, which would silently no-op the transform and reintroduce
+    // incorrect preload URLs.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+
+    const code = `assetsURL = function(B) { return '/' + B }`;
+    const [fileName, chunk] = makeChunk(code, 'main.js', { isEntry: true });
+    const bundle: OutputBundle = { [fileName]: chunk } as unknown as OutputBundle;
+
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call({ warn: () => { } } as any, makeOutputOptions(), bundle);
+
+    const out = (bundle[fileName] as OutputChunk).code;
+    expect(out).toMatch(/typeof window !== 'undefined'/);
+    expect(out).toMatch(/resourceBasePath-{{widget.wid}}/);
+    expect(out).not.toContain(`return '/' + B`);
+    expect(out).toContain("assetsURL = function(B) {");
   });
 
   it('removes entry JS/CSS files from __vite__mapDeps and remaps call-site indices', () => {
