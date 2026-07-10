@@ -116,6 +116,25 @@ export function transformDynamicImports(
       }
       const escapedBase = resolvedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+      // ---- PASS 3: Collect non-entry chunk file names (e.g. vendor chunks from manualChunks) ----
+      // When the consuming project's Vite config splits shared dependencies (react,
+      // jsx-runtime, the __vitePreload helper, UI libraries, etc.) out of the entry via
+      // `build.rollupOptions.output.manualChunks`, Rollup emits a *static* top-level
+      // import in the entry chunk pointing at that separate chunk file, e.g.
+      // `import{...}from"./vendor-Hash.js"`. Since the entry chunk is physically
+      // relocated/inlined by Modyo (its own relative-URL identity is lost), that static
+      // import would otherwise resolve against the domain root instead of the widget's
+      // resource subfolder. Native ESM static import specifiers must be string literals
+      // (they can't reference a runtime-computed URL), so Pattern 6 rewrites these into
+      // an equivalent dynamic `await import(...)` + destructuring, reusing the same
+      // resourceBasePath mechanism as Pattern 1.
+      const nonEntryChunkFiles: Set<string> = new Set();
+      for (const chunkOrAsset of Object.values(bundle)) {
+        if (chunkOrAsset.type === 'chunk' && !(chunkOrAsset as OutputChunk).isEntry) {
+          nonEntryChunkFiles.add(chunkOrAsset.fileName);
+        }
+      }
+
       // Process each chunk in the bundle
       for (const [fileName, chunkOrAsset] of Object.entries(bundle)) {
         // Only process JavaScript chunks, not assets
@@ -167,6 +186,72 @@ export function transformDynamicImports(
             s.overwrite(match.index, match.index + fullMatch.length, replacement);
             transformCount++;
           }
+
+          // Pattern 6: Transform static imports of non-entry (vendor/manualChunks) chunks
+          // in the entry chunk. Rollup emits these as plain top-level static imports, e.g.
+          // `import{a as b,c}from"./vendor-Hash.js"`, when the consuming project's Vite
+          // config splits shared dependencies out via `manualChunks`. Since a static import
+          // specifier must be a string literal (it can't reference a runtime-computed
+          // resourceBasePath the way `import()` can), we rewrite it into an equivalent
+          // dynamic `await import(...)` + destructuring assignment. This relies on
+          // top-level await support in the target environment (all evergreen browsers
+          // support this for `<script type="module">`).
+          if (nonEntryChunkFiles.size > 0) {
+            const staticChunkImportRegex = /import\s*\{([^}]*)\}\s*from\s*([\x60'"])(\.\/[^\x60'"()]+?\.js)\2;?/g;
+            let staticMatch: RegExpExecArray | null;
+            while ((staticMatch = staticChunkImportRegex.exec(chunk.code)) !== null) {
+              const fullMatch = staticMatch[0];
+              const importClause = staticMatch[1];
+              const quote = staticMatch[2];
+              const chunkPath = staticMatch[3];
+              const chunkName = chunkPath.replace('./', '');
+
+              if (!nonEntryChunkFiles.has(chunkName)) {
+                continue;
+              }
+
+              // Convert `{a as b, c}` into destructuring `{a: b, c}` (bare names need no
+              // renaming in a destructuring pattern).
+              const destructurePattern = importClause
+                .split(',')
+                .map(part => part.trim())
+                .filter(part => part.length > 0)
+                .map(part => {
+                  const asMatch = part.match(/^(\S+)\s+as\s+(\S+)$/);
+                  return asMatch ? `${asMatch[1]}: ${asMatch[2]}` : part;
+                })
+                .join(', ');
+
+              const resourceBaseRefStatic = resourceBaseVar(widgetPlaceholder);
+              const staticReplacement = `const { ${destructurePattern} } = await import((typeof window !== 'undefined' && window) ? (${resourceBaseRefStatic} + ${quote}${chunkName}${quote}) : ${quote}${chunkPath}${quote});`;
+
+              s.overwrite(staticMatch.index, staticMatch.index + fullMatch.length, staticReplacement);
+              transformCount++;
+            }
+
+            // Pattern 6b: Side-effect-only static imports of non-entry chunks, e.g.
+            // `import"./vendor-Hash.js";` (no bindings). These occur when a manualChunks
+            // split is pulled in purely for its side effects (nothing destructured from
+            // it in the entry chunk itself). Same rewrite as above, minus destructuring.
+            const sideEffectChunkImportRegex = /import\s*([\x60'"])(\.\/[^\x60'"()]+?\.js)\1;?/g;
+            let sideEffectMatch: RegExpExecArray | null;
+            while ((sideEffectMatch = sideEffectChunkImportRegex.exec(chunk.code)) !== null) {
+              const fullMatch = sideEffectMatch[0];
+              const quote = sideEffectMatch[1];
+              const chunkPath = sideEffectMatch[2];
+              const chunkName = chunkPath.replace('./', '');
+
+              if (!nonEntryChunkFiles.has(chunkName)) {
+                continue;
+              }
+
+              const resourceBaseRefStatic = resourceBaseVar(widgetPlaceholder);
+              const staticReplacement = `await import((typeof window !== 'undefined' && window) ? (${resourceBaseRefStatic} + ${quote}${chunkName}${quote}) : ${quote}${chunkPath}${quote});`;
+
+              s.overwrite(sideEffectMatch.index, sideEffectMatch.index + fullMatch.length, staticReplacement);
+              transformCount++;
+            }
+          }
         }
 
         // A "chunk file" here means any non-entry JS chunk emitted by Rollup/Vite, i.e.
@@ -201,12 +286,18 @@ export function transformDynamicImports(
           }
         }
 
-        // Pattern 3: Transform assetsURL in entry chunks
+        // Pattern 3: Transform assetsURL wherever Vite emits it.
         // Vite generates: assetsURL = function(B) { return "/" + B }
         // This function is used by __vitePreload to resolve asset paths in __vite__mapDeps.
         // In Modyo/other subfolder deployments, the "/" prefix resolves to the domain root
         // instead of the widget subfolder. We override it to use the resource base path.
-        if (entryNamePredicate(chunk)) {
+        // NOTE: assetsURL normally lives in the entry chunk (bundled alongside Vite's
+        // internal preload-helper virtual module), but if the consuming project's Vite
+        // config splits that helper out via `manualChunks` (e.g. to isolate react/vendor
+        // code from the entry, see Pattern 6), assetsURL ends up in that separate chunk
+        // instead. We scan every chunk rather than gating on `entryNamePredicate` so this
+        // keeps working regardless of where Rollup/Vite places the helper.
+        {
           const assetsURLRegex = /assetsURL\s*=\s*function\s*\(\s*(\w+)\s*\)\s*\{\s*return\s*"\/"\s*\+\s*\1\s*;?\s*\}/g;
           let assetsMatch: RegExpExecArray | null;
           while ((assetsMatch = assetsURLRegex.exec(chunk.code)) !== null) {

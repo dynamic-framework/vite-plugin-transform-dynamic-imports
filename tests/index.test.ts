@@ -193,6 +193,91 @@ describe('myPlugin', () => {
     expect(chunkOut).toContain('__vite__mapDeps([0])');
   });
 
+  it('transforms static named-import of a manualChunks vendor chunk into a dynamic await import', () => {
+    // Regression test: when the consuming project's Vite config uses
+    // `build.rollupOptions.output.manualChunks` to split shared deps (react, etc.) out
+    // of the entry, Rollup emits a static top-level import in the entry pointing at that
+    // vendor chunk, e.g. `import{a as b,c}from"./vendor-Hash.js"`. Since a static import
+    // specifier must be a string literal, this must be rewritten into an equivalent
+    // `await import(...)` + destructuring so it resolves against the widget's resource
+    // base path instead of the domain root.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+
+    const entryCode = `import{r as reactExports,j as jsxRuntimeExports}from"./vendor-Hash123.js";console.log(reactExports);`;
+    const [entryName, entryChunk] = makeChunk(entryCode, 'main.js', { isEntry: true });
+
+    const [vendorName, vendorChunk] = makeChunk('export const r = 1, j = 2;', 'vendor-Hash123.js');
+
+    const bundle: OutputBundle = {
+      [entryName]: entryChunk,
+      [vendorName]: vendorChunk,
+    } as unknown as OutputBundle;
+
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call({ warn: () => { } } as any, makeOutputOptions(), bundle);
+
+    const out = (bundle[entryName] as OutputChunk).code;
+    expect(out).not.toContain('import{r as reactExports,j as jsxRuntimeExports}from"./vendor-Hash123.js"');
+    expect(out).toContain('const { r: reactExports, j: jsxRuntimeExports } = await import(');
+    expect(out).toMatch(/typeof window !== 'undefined'/);
+    expect(out).toMatch(/resourceBasePath-{{widget\.wid}}/);
+    expect(out).toContain('vendor-Hash123.js');
+  });
+
+  it('transforms a side-effect-only static import of a manualChunks vendor chunk', () => {
+    // Regression test: a manualChunks vendor split can be pulled into the entry purely
+    // for its side effects, with no named bindings, e.g. `import"./vendor-i18next.js";`.
+    // Pattern 6's named-import regex requires `{...}`, so this needs its own rewrite
+    // (Pattern 6b) or the import silently resolves from the domain root and 404s.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+
+    const entryCode = `import"./vendor-i18next.Hash456.js";console.log("after");`;
+    const [entryName, entryChunk] = makeChunk(entryCode, 'main.js', { isEntry: true });
+
+    const [vendorName, vendorChunk] = makeChunk('console.log("i18next side effect");', 'vendor-i18next.Hash456.js');
+
+    const bundle: OutputBundle = {
+      [entryName]: entryChunk,
+      [vendorName]: vendorChunk,
+    } as unknown as OutputBundle;
+
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call({ warn: () => { } } as any, makeOutputOptions(), bundle);
+
+    const out = (bundle[entryName] as OutputChunk).code;
+    expect(out).not.toContain('import"./vendor-i18next.Hash456.js"');
+    expect(out).toMatch(/^await import\(/);
+    expect(out).toMatch(/typeof window !== 'undefined'/);
+    expect(out).toMatch(/resourceBasePath-{{widget\.wid}}/);
+    expect(out).toContain('vendor-i18next.Hash456.js');
+  });
+
+  it('transforms assetsURL when it lands in a non-entry chunk (manualChunks split)', () => {
+    // Regression test: when manualChunks relocates Vite's internal preload-helper virtual
+    // module (which defines/uses assetsURL) out of the entry into a separate vendor
+    // chunk, Pattern 3 must still find and rewrite it there, not only in the entry.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+
+    const [entryName, entryChunk] = makeChunk('console.log("entry, no assetsURL here");', 'main.js', { isEntry: true });
+
+    const vendorCode = `assetsURL = function(B) { return "/" + B }`;
+    const [vendorName, vendorChunk] = makeChunk(vendorCode, 'vendor-misc.Hash789.js');
+
+    const bundle: OutputBundle = {
+      [entryName]: entryChunk,
+      [vendorName]: vendorChunk,
+    } as unknown as OutputBundle;
+
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call({ warn: () => { } } as any, makeOutputOptions(), bundle);
+
+    const out = (bundle[vendorName] as OutputChunk).code;
+    expect(out).toMatch(/typeof window !== 'undefined'/);
+    expect(out).toMatch(/resourceBasePath-{{widget\.wid}}/);
+    expect(out).not.toContain('return "/" + B');
+    expect(out).toContain('assetsURL = function(B) {');
+  });
+
   it('rewrites hardcoded static asset URLs (images/fonts) to use the resource base path', () => {
     // Regression test: `import img from './img.avif'` compiles to a plain string
     // constant like `const R = "/img-Hash.avif"`. Unlike chunk/CSS preload deps, this
