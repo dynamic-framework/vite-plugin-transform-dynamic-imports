@@ -132,6 +132,38 @@ describe('myPlugin', () => {
     expect(out).toContain(`: "/my-base/"`);
   });
 
+  it('warns when build.write is false, since writeBundle never runs in that flow', () => {
+    // Regression test: this plugin relies entirely on the `writeBundle` hook, which
+    // Rollup/Vite skip for generate-only builds (`build.write: false` /
+    // `bundle.generate()`). Without an explicit warning, consumers using that flow
+    // would silently get untransformed output.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+    const warnings: string[] = [];
+
+    // @ts-expect-error calling the configResolved hook directly with build.write: false
+    plugin.configResolved!.call({ warn: (msg: string) => warnings.push(msg) } as any, {
+      base: '/',
+      build: { write: false },
+    } as any);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/build\.write.*false/);
+    expect(warnings[0]).toMatch(/writeBundle/);
+  });
+
+  it('does not warn when build.write is left at its default (true)', () => {
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+    const warnings: string[] = [];
+
+    // @ts-expect-error calling the configResolved hook directly with a default build config
+    plugin.configResolved!.call({ warn: (msg: string) => warnings.push(msg) } as any, {
+      base: '/',
+      build: { write: true },
+    } as any);
+
+    expect(warnings).toHaveLength(0);
+  });
+
   it('transforms assetsURL when Vite emits the base literal with single quotes', () => {
     // Regression test: assetsURLRegex previously only matched a double-quoted base
     // literal (`return "..." + param`). Some minifiers/emitters may use single quotes

@@ -49,6 +49,20 @@ export function transformDynamicImports(
 
     configResolved(config) {
       resolvedBase = config.base ?? '/';
+
+      // This plugin relies entirely on `writeBundle`, which Rollup/Vite only invoke when
+      // the build actually writes output files to disk. Generate-only flows (Vite's
+      // `build.write: false`, or calling `bundle.generate()` directly instead of
+      // `bundle.write()`) never fire `writeBundle`, so the transformations below would
+      // silently never run. Warn early so consumers relying on those flows aren't
+      // surprised by unmodified output.
+      if (config.build?.write === false) {
+        this.warn(
+          'transform-dynamic-imports: `build.write` is set to `false`. This plugin ' +
+          'applies its transformations in the `writeBundle` hook, which does not run ' +
+          'for generate-only builds, so no transformations will be applied.'
+        );
+      }
     },
 
     // Vite's internal `vite:build-import-analysis` plugin resolves the `__VITE_PRELOAD__`
