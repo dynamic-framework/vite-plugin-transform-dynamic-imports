@@ -408,10 +408,13 @@ export function transformDynamicImports(
           let assetUrlMatch: RegExpExecArray | null;
           while ((assetUrlMatch = assetUrlRegex.exec(chunk.code)) !== null) {
             const fullMatch = assetUrlMatch[0];
-            const quote = assetUrlMatch[1];
             const assetFileName = assetUrlMatch[2];
             const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
-            const replacement = `(((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : ${quote}${resolvedBase}${quote}) + ${quote}${assetFileName}${quote})`;
+            // JSON.stringify safely escapes resolvedBase/assetFileName for embedding as
+            // JS string literals, rather than reusing whatever quote character happened
+            // to appear in the matched source (which could produce invalid JS if
+            // config.base or the filename ever contained that same quote character).
+            const replacement = `(((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : ${JSON.stringify(resolvedBase)}) + ${JSON.stringify(assetFileName)})`;
             s.overwrite(assetUrlMatch.index, assetUrlMatch.index + fullMatch.length, replacement);
             transformCount++;
           }
