@@ -9,10 +9,10 @@ import type { OutputBundle, OutputChunk } from 'rollup';
 // (Rollup has already written the untransformed files to disk by the time
 // writeBundle runs, so the plugin must overwrite them itself).
 const createdTempDirs: string[] = [];
-function makeOutputOptions() {
+function makeOutputOptions(overrides: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'transform-dynamic-imports-test-'));
   createdTempDirs.push(dir);
-  return { dir } as any;
+  return { dir, format: 'es', ...overrides } as any;
 }
 
 afterAll(() => {
@@ -330,6 +330,62 @@ describe('myPlugin', () => {
     expect(out).toMatch(/typeof window !== 'undefined'/);
     expect(out).toMatch(/resourceBasePath-{{widget\.wid}}/);
     expect(out).toContain('vendor-i18next.Hash456.js');
+  });
+
+  it('skips Pattern 6/6b and warns when output format is not ESM', () => {
+    // Regression test: Pattern 6/6b rewrite static imports into a top-level
+    // `await import(...)`, which is only valid syntax for ES module output. If the
+    // consuming project's Vite config targets a non-ESM format (e.g. `cjs`/`iife`,
+    // common for SSR or library builds), this rewrite must be skipped (leaving the
+    // static import as-is) and a warning emitted, rather than emitting invalid JS.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+    const warnings: string[] = [];
+
+    const entryCode = `import{r as reactExports}from"./vendor-Hash123.js";console.log(reactExports);`;
+    const [entryName, entryChunk] = makeChunk(entryCode, 'main.js', { isEntry: true });
+    const [vendorName, vendorChunk] = makeChunk('export const r = 1;', 'vendor-Hash123.js');
+
+    const bundle: OutputBundle = {
+      [entryName]: entryChunk,
+      [vendorName]: vendorChunk,
+    } as unknown as OutputBundle;
+
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call(
+      { warn: (msg: string) => warnings.push(msg) } as any,
+      makeOutputOptions({ format: 'cjs' }),
+      bundle
+    );
+
+    const out = (bundle[entryName] as OutputChunk).code;
+    // Static import left untouched (no invalid top-level await injected)
+    expect(out).toContain('import{r as reactExports}from"./vendor-Hash123.js"');
+    expect(out).not.toContain('await import(');
+    expect(warnings.some(w => w.includes('Pattern 6/6b') && w.includes('cjs'))).toBe(true);
+  });
+
+  it('warns instead of silently skipping when a __vite__mapDeps array is not JSON-parseable', () => {
+    // Regression test: Pattern 4 previously swallowed JSON.parse failures on the
+    // __vite__mapDeps array silently. If a minifier/emitter ever produces a
+    // non-JSON-parseable array (e.g. unquoted or single-quoted entries), this should
+    // now surface a warning instead of failing silently, since it means entry JS/CSS
+    // files may still be present in the deps array (reintroducing 404s).
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+    const warnings: string[] = [];
+
+    const chunkCode = `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[main.css])))=>i.map(i=>d[i]);__vite__mapDeps([0]);`;
+    const [entryName, entryChunk] = makeChunk('', 'main.js', { isEntry: true });
+    const [chunkFileName, chunk] = makeChunk(chunkCode, 'Secondary-abc123.js');
+
+    const bundle: OutputBundle = {
+      [entryName]: entryChunk,
+      [chunkFileName]: chunk,
+    } as unknown as OutputBundle;
+
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call({ warn: (msg: string) => warnings.push(msg) } as any, makeOutputOptions(), bundle);
+
+    expect(warnings.some(w => w.includes('__vite__mapDeps') && w.includes('JSON'))).toBe(true);
   });
 
   it('transforms assetsURL when it lands in a non-entry chunk (manualChunks split)', () => {

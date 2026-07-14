@@ -149,6 +149,25 @@ export function transformDynamicImports(
         }
       }
 
+      // Pattern 6/6b rewrite static imports into a top-level `await import(...)`, which
+      // is only valid syntax for ES module output. If the consuming project's Vite config
+      // targets a different output format (e.g. `cjs`/`iife`, common for SSR or library
+      // builds), emitting that syntax would produce invalid JavaScript. We gate the
+      // rewrite to ESM output and warn once so consumers relying on manualChunks vendor
+      // splitting under a non-ESM format get a clear signal instead of a build that
+      // silently breaks at runtime.
+      const isEsmOutput = outputOptions.format === 'es';
+      if (nonEntryChunkFiles.size > 0 && !isEsmOutput) {
+        this.warn(
+          `transform-dynamic-imports: detected manualChunks-split vendor chunk(s), but the ` +
+          `output format is "${outputOptions.format}" (not "es"). Pattern 6/6b rewrites ` +
+          'static imports of those chunks into a top-level `await import(...)`, which is only ' +
+          'valid syntax for ES module output; skipping this rewrite to avoid generating invalid ' +
+          'JavaScript. Static imports of vendor/manualChunks chunks will not be resolved through ' +
+          'the resource base path in this build.'
+        );
+      }
+
       // Process each chunk in the bundle
       for (const [fileName, chunkOrAsset] of Object.entries(bundle)) {
         // Only process JavaScript chunks, not assets
@@ -210,7 +229,7 @@ export function transformDynamicImports(
           // dynamic `await import(...)` + destructuring assignment. This relies on
           // top-level await support in the target environment (all evergreen browsers
           // support this for `<script type="module">`).
-          if (nonEntryChunkFiles.size > 0) {
+          if (nonEntryChunkFiles.size > 0 && isEsmOutput) {
             const staticChunkImportRegex = /import\s*\{([^}]*)\}\s*from\s*([\x60'"])(\.\/[^\x60'"()]+?\.js)\2;?/g;
             let staticMatch: RegExpExecArray | null;
             while ((staticMatch = staticChunkImportRegex.exec(chunk.code)) !== null) {
@@ -394,8 +413,18 @@ export function transformDynamicImports(
                   transformCount++;
                 }
               }
-            } catch {
-              // Silently skip if the array is not parseable JSON (unlikely in Vite output)
+            } catch (err) {
+              // If some minifier/emitter ever produces a non-JSON-parseable deps array
+              // (e.g. single-quoted or unquoted strings, as we've already had to handle
+              // for the quote style in Pattern 3), this silently no-ops and reintroduces
+              // 404s for entry JS/CSS files still listed in __vite__mapDeps. Warn so the
+              // failure is diagnosable instead of silent.
+              this.warn(
+                `transform-dynamic-imports: could not parse __vite__mapDeps array in ` +
+                `"${fileName}" as JSON (${(err as Error).message}); skipping entry-file ` +
+                'removal from this deps array. This may reintroduce 404s if the array ' +
+                'still references entry JS/CSS files.'
+              );
             }
           }
         }
