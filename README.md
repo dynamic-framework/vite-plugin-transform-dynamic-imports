@@ -87,7 +87,7 @@ Assume your app produces an entry chunk containing:
 import('./users.chunk.js');
 ```
 
-At runtime, define a global base path (e.g., per widget):
+At runtime, a global base path must be defined (e.g., per widget). This configuration is typically applied on top of the `custom_widget` snippet:
 
 ```html
 <script nonce="{{csp_nonce}}">
@@ -110,7 +110,6 @@ import(((typeof window !== 'undefined' && window) ? window['resourceBasePath-{{w
 ## Requirements and Considerations
 
 - Code-splitting: Ensure Vite/Rollup generates chunk files (e.g., dynamic imports present and chunkFilePattern matches your chunk naming).
-- Chunk naming: Default matcher expects names ending with `.chunk.js`. If your output differs (e.g., `-abc123.js`), adjust `chunkFilePattern`.
 - Entry detection: Defaults to `chunk.isEntry`. If your build produces multiple entries or non-standard entries, provide `entryNamePredicate`.
 - Global variable: You must set the runtime base path variable before the entry chunk executes. By default: `window['resourceBasePath-{{widget.wid}}']`.
 - Static import rewrite: Only affects chunk files containing `from "./main.js"`. If your main file name or path differs, update `entryFileName`.
