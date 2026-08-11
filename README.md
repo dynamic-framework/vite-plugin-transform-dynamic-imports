@@ -90,8 +90,8 @@ import('./users.chunk.js');
 At runtime, define a global base path (e.g., per widget):
 
 ```html
-<script>
-  window['resourceBasePath-{{widget.wid}}'] = 'https://cdn.example.com/widgets/123/';
+<script nonce="{{csp_nonce}}">
+	window['resourceBasePath-{{widget.wid}}'] = "{{site.url}}/widget_manager/{{widget.wid}}/{{widget.version}}/";
 </script>
 ```
 
