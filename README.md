@@ -1,4 +1,4 @@
-# Dynamic Imports Vite Plugin
+# Vite plugin transform dynamic imports
 
 A Vite/Rollup plugin that transforms dynamic and static imports in built chunks to use a runtime-configurable base path. Useful when widget assets are hosted under per-widget URLs and need to resolve chunk paths at runtime (e.g., window['resourceBasePath-{{widget.wid}}']).
 
