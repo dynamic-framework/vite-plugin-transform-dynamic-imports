@@ -24,7 +24,12 @@ export interface TransformDynamicImportsOptions {
   /** Widget placeholder used in resource base path */
   widgetPlaceholder?: string;
 
-  /** Pattern for chunk file extension to match */
+  /**
+   * @deprecated No longer used to detect chunk files (the plugin now relies on
+   * `entryNamePredicate` instead, which defaults to checking `chunk.isEntry` but can be
+   * overridden by consumers, e.g. for multi-entry/custom entry selection). Kept only for
+   * backward compatibility with existing configs; has no effect.
+   */
   chunkFilePattern?: string;
 
   /** Entry file name pattern to transform static imports from */
