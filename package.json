@@ -1,6 +1,6 @@
 {
   "name": "@dynamic-framework/vite-plugin-transform-dynamic-imports",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Vite plugin that transforms dynamic imports to use runtime-configurable base paths for widget delivery",
   "type": "module",
   "main": "dist/index.js",
