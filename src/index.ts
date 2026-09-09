@@ -39,6 +39,12 @@ export function transformDynamicImports(
   // Referenced only to keep the destructured binding intentional (see comment above).
   void chunkFilePattern;
 
+  // Vite's preload-helper virtual module id: `\0vite/preload-helper.js` in Vite 6/7,
+  // `\0vite/preload-helper` in earlier versions. Matched loosely so the plugin keeps
+  // working across Vite majors.
+  const isPreloadHelperId = (id: string): boolean =>
+    /(?:^|\0|\/)vite\/preload-helper(?:\.js)?$/.test(id);
+
   // Captured from Vite's resolved config so Pattern 5 knows the exact literal prefix
   // Vite uses when emitting root-relative asset URLs (e.g. "/jaguar.avif"), which
   // depends on the `base` config option (defaults to '/').
@@ -63,6 +69,66 @@ export function transformDynamicImports(
           'for generate-only builds, so no transformations will be applied.'
         );
       }
+    },
+
+    // ---- Pattern 3 (source-level): rewrite Vite's `assetsURL` helper ----
+    // Vite generates its preload helper from a fixed template in a virtual module
+    // (`\0vite/preload-helper.js`):
+    //
+    //   const assetsURL = function(dep) { return "/"+dep };
+    //
+    // `assetsURL` is what `__vitePreload` uses to turn every `__vite__mapDeps` entry
+    // (lazy chunk JS *and* its CSS) into a URL, so on Modyo it must resolve against the
+    // widget's resource base path instead of the domain root.
+    //
+    // We rewrite it HERE, in `transform`, rather than post-build in `writeBundle`,
+    // because `assetsURL` is a plain module-local `const`: every real build minifies it
+    // (esbuild renames it to something like `u8`), so a `writeBundle` regex anchored on
+    // the identifier `assetsURL` can only ever match unminified code and silently no-ops
+    // on actual output. Transforming the virtual module gives us the verbatim, still
+    // unminified template, and the minifier then treats our replacement like any other
+    // code. `writeBundle` keeps a name-agnostic fallback for the cases this hook can't
+    // reach (e.g. a pre-bundled helper coming from another plugin).
+    transform(code, id) {
+      if (!isPreloadHelperId(id)) {
+        return null;
+      }
+
+      // Matches the template above for any parameter name and any quote style around the
+      // baked-in `base` literal, without depending on the `assetsURL` identifier itself.
+      const helperRegex = /(const\s+\w+\s*=\s*)function\s*\(\s*(\w+)\s*\)\s*\{\s*return\s*((["'\x60])(?:[^\\]|\\.)*?\4)\s*\+\s*\2\s*;?\s*\}/;
+      const match = helperRegex.exec(code);
+      if (!match) {
+        // The `renderBuiltUrl` / relative-base variant emits
+        // `function(dep, importerUrl) { return new URL(dep, importerUrl).href }`, which
+        // already resolves against the importing chunk's own URL and needs no rewrite.
+        if (!/new URL\s*\(/.test(code)) {
+          this.warn(
+            'transform-dynamic-imports: could not locate the `assetsURL` helper in ' +
+            `"${id}"; preload dependency URLs (lazy chunk JS/CSS) will keep resolving ` +
+            'against the configured base instead of the resource base path.'
+          );
+        }
+        return null;
+      }
+
+      const declPrefix = match[1];
+      const param = match[2];
+      const baseLiteral = match[3];
+      const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
+      // `||` (rather than a plain window check) so a missing/empty resource base path
+      // falls back to the configured base instead of producing "undefined<dep>" URLs.
+      const replacement =
+        `${declPrefix}function(${param}) { `
+        + `return ((typeof window !== 'undefined' && ${resourceBaseRef}) || ${baseLiteral}) + ${param}; }`;
+
+      const s = new MagicString(code);
+      s.overwrite(match.index, match.index + match[0].length, replacement);
+
+      return {
+        code: s.toString(),
+        map: enableSourceMap ? s.generateMap({ hires: true }) : null,
+      };
     },
 
     // Vite's internal `vite:build-import-analysis` plugin resolves the `__VITE_PRELOAD__`
@@ -167,6 +233,11 @@ export function transformDynamicImports(
           'the resource base path in this build.'
         );
       }
+
+      // Chunks that ended up importing the entry (Pattern 2). Collected so we can warn
+      // once at the end: this rewrite is the one transformation here that depends on an
+      // assumption Modyo only honours for *published* widgets (see the warning below).
+      const chunksImportingEntry: string[] = [];
 
       // Process each chunk in the bundle
       for (const [fileName, chunkOrAsset] of Object.entries(bundle)) {
@@ -318,6 +389,9 @@ export function transformDynamicImports(
             
             s.overwrite(match.index, match.index + fullMatch.length, replacement);
             transformCount++;
+            if (!chunksImportingEntry.includes(fileName)) {
+              chunksImportingEntry.push(fileName);
+            }
           }
         }
 
@@ -332,19 +406,34 @@ export function transformDynamicImports(
         // code from the entry, see Pattern 6), assetsURL ends up in that separate chunk
         // instead. We scan every chunk rather than gating on `entryNamePredicate` so this
         // keeps working regardless of where Rollup/Vite places the helper.
-        {
+        // The primary rewrite now happens source-side in `transform` (see the hook
+        // above), before minification. This post-build pass is only a fallback for
+        // helper code this plugin's `transform` hook never sees (e.g. a pre-bundled
+        // preload helper injected by another plugin). It therefore must NOT depend on
+        // the `assetsURL` identifier surviving: esbuild/terser rename that module-local
+        // const in every real build (e.g. to `u8`), which is why the previous
+        // identifier-anchored regex silently matched nothing on actual output. We match
+        // the function's *shape* instead, and only inside chunks that actually contain
+        // Vite's preload helper, to keep the looser pattern from touching user code.
+        // Markers of Vite's preload helper: the minified forms keep the
+        // `"modulepreload"` literal (or `relList.supports`, when the polyfill is off)
+        // and the `__vitePreload` export name; unminified code still has `assetsURL`.
+        if (/modulepreload|relList\.supports|__vitePreload|assetsURL/.test(chunk.code)) {
           const assetsURLRegex = new RegExp(
-            `assetsURL\\s*=\\s*function\\s*\\(\\s*(\\w+)\\s*\\)\\s*\\{\\s*return\\s*([\\x60'"])${escapedBase}\\2\\s*\\+\\s*\\1\\s*;?\\s*\\}`,
+            `(\\w+)\\s*=\\s*function\\s*\\(\\s*(\\w+)\\s*\\)\\s*\\{\\s*return\\s*([\\x60'"])${escapedBase}\\3\\s*\\+\\s*\\2\\s*;?\\s*\\}`,
             'g'
           );
           let assetsMatch: RegExpExecArray | null;
           while ((assetsMatch = assetsURLRegex.exec(chunk.code)) !== null) {
-            const param = assetsMatch[1];
+            const varName = assetsMatch[1];
+            const param = assetsMatch[2];
             const resourceBaseRef = resourceBaseVar(widgetPlaceholder);
             // JSON.stringify safely escapes resolvedBase for embedding as a JS string
             // literal (handles quotes/backslashes it may contain), rather than naively
             // interpolating it inside a hand-written single-quoted literal.
-            const replacement = `assetsURL = function(${param}) { return ((typeof window !== 'undefined' && window) ? ${resourceBaseRef} : ${JSON.stringify(resolvedBase)}) + ${param}; }`;
+            // `||` so a missing/empty resource base path falls back to the configured
+            // base rather than producing "undefined<dep>" URLs.
+            const replacement = `${varName} = function(${param}) { return ((typeof window !== 'undefined' && ${resourceBaseRef}) || ${JSON.stringify(resolvedBase)}) + ${param}; }`;
             s.overwrite(assetsMatch.index, assetsMatch.index + assetsMatch[0].length, replacement);
             transformCount++;
           }
@@ -499,6 +588,32 @@ export function transformDynamicImports(
         }
       }
       
+      // Pattern 2 points chunks at the canonical
+      // `{{site.url}}/widget_manager/{{widget.wid}}/{{widget.version}}.js` URL, which is
+      // only a stable singleton for a *published* widget. In Modyo's preview/draft mode
+      // `{{widget.version}}` re-renders per request, so each chunk fetches a different
+      // copy of the entry under a different URL. The browser's module map keys on the
+      // URL, so nothing is deduplicated: the entry (and React with it) is executed once
+      // per chunk, which surfaces as "Minified React error #321" (invalid hook call, from
+      // mismatched React copies) and `NotFoundError: Failed to execute 'removeChild'`
+      // (two renderers fighting over the same DOM nodes) — in preview only, which makes
+      // it easy to mistake for a Modyo bug. Warn at build time instead, since the fix
+      // lives in the consumer's Vite config, not here.
+      if (chunksImportingEntry.length > 0) {
+        this.warn(
+          'transform-dynamic-imports: ' + chunksImportingEntry.length + ' chunk(s) import the '
+          + 'entry and were rewritten to the canonical widget_manager URL '
+          + `(${chunksImportingEntry.join(', ')}). That URL only resolves to a single, stable `
+          + 'file once the widget is published: in Modyo preview/draft mode each chunk gets '
+          + 'its own copy of the entry, producing multiple React instances (React error #321, '
+          + "removeChild NotFoundError). Move every module these chunks share with the entry "
+          + 'into a chunk of its own via build.rollupOptions.output.manualChunks (react, '
+          + 'react-dom, jsx-runtime, your UI library, vite/preload-helper) so they resolve '
+          + 'through the resource base path instead. Note that `id` is a resolved realpath, '
+          + 'so matching on a "node_modules/" segment misses symlinked/linked packages.'
+        );
+      }
+
       if (totalTransformations === 0) {
         this.warn(
           'No dynamic imports were transformed. This may be expected if there are no code-split chunks, ' +
