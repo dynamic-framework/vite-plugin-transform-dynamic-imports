@@ -127,9 +127,111 @@ describe('myPlugin', () => {
     expect(out).toMatch(/resourceBasePath-{{widget.wid}}/);
     expect(out).not.toContain(`return "/my-base/" + B`);
     expect(out).toContain("assetsURL = function(B) {");
-    // SSR fallback should use the configured base (JSON.stringify-escaped), not a
+    // Fallback should use the configured base (JSON.stringify-escaped), not a
     // hard-coded '/'
-    expect(out).toContain(`: "/my-base/"`);
+    expect(out).toContain(`|| "/my-base/"`);
+  });
+
+  it('warns when a chunk imports the entry, since that breaks Modyo preview mode', () => {
+    // Pattern 2's canonical widget_manager URL is only a stable singleton for a
+    // published widget; in preview/draft mode each chunk pulls its own copy of the
+    // entry, giving multiple React instances (#321 / removeChild). The rewrite still
+    // has to happen, but it must not be silent — the fix lives in the consumer's
+    // manualChunks config.
+    const plugin = myPlugin();
+    const [entryName, entryChunk] = makeChunk('console.log("entry");', 'main.js', { isEntry: true });
+    const [chunkName, chunk] = makeChunk('import{a}from"./main.js";', 'Primary.chunk.js');
+    const bundle: OutputBundle = {
+      [entryName]: entryChunk,
+      [chunkName]: chunk,
+    } as unknown as OutputBundle;
+
+    const warnings: string[] = [];
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call(
+      { warn: (msg: string) => warnings.push(String(msg)) } as any,
+      makeOutputOptions(),
+      bundle,
+    );
+
+    expect((bundle[chunkName] as OutputChunk).code).toContain('widget_manager');
+    const warning = warnings.find(w => w.includes('canonical widget_manager URL'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain('Primary.chunk.js');
+    expect(warning).toContain('manualChunks');
+  });
+
+  it('does not warn about entry imports when no chunk imports the entry', () => {
+    const plugin = myPlugin();
+    const [entryName, entryChunk] = makeChunk('console.log("entry");', 'main.js', { isEntry: true });
+    const [chunkName, chunk] = makeChunk('import{a}from"./vendor.chunk.js";', 'Primary.chunk.js');
+    const bundle: OutputBundle = {
+      [entryName]: entryChunk,
+      [chunkName]: chunk,
+    } as unknown as OutputBundle;
+
+    const warnings: string[] = [];
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call(
+      { warn: (msg: string) => warnings.push(String(msg)) } as any,
+      makeOutputOptions(),
+      bundle,
+    );
+
+    expect(warnings.some(w => w.includes('canonical widget_manager URL'))).toBe(false);
+  });
+
+  it('rewrites the assetsURL helper even after a minifier renames the identifier', () => {
+    // Regression test for the real-world failure this plugin exists to prevent:
+    // `assetsURL` is a module-local `const` in Vite's preload helper, so esbuild/terser
+    // rename it (e.g. to `u8`) in every production build. The writeBundle fallback used
+    // to anchor its regex on the literal identifier `assetsURL`, so it matched only the
+    // unminified fixtures in this test file and silently no-op'd on actual output —
+    // leaving `__vitePreload` resolving lazy-chunk CSS against the domain root, which
+    // makes the CSS preload reject and swallows the first click on a lazy route.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+    const code = `const r8="modulepreload",u8=function(a){return"/"+a},Hy={};`;
+    const [fileName, chunk] = makeChunk(code, 'main.js', { isEntry: true });
+    const bundle: OutputBundle = { [fileName]: chunk } as unknown as OutputBundle;
+
+    // @ts-expect-error using plugin context methods indirectly
+    plugin.writeBundle!.call({ warn: () => { } } as any, makeOutputOptions(), bundle);
+
+    const out = (bundle[fileName] as OutputChunk).code;
+    expect(out).not.toContain('return"/"+a');
+    expect(out).toContain("u8 = function(a) {");
+    expect(out).toMatch(/resourceBasePath-{{widget.wid}}/);
+  });
+
+  it('rewrites assetsURL at the source level in the preload-helper virtual module', () => {
+    // The primary (minifier-proof) path: transform Vite's preload-helper template
+    // before it is bundled/minified, so the rewrite never depends on identifier names
+    // surviving. This is the exact code Vite's `vite:build-import-analysis` emits.
+    const plugin = myPlugin({ widgetPlaceholder: '{{widget.wid}}' });
+    const source =
+      `const scriptRel = 'modulepreload';const assetsURL = function(dep) { return "/"+dep };`
+      + `const seen = {};export const __vitePreload = function preload() {};`;
+
+    // @ts-expect-error calling the transform hook directly
+    const result = plugin.transform!.call({ warn: () => { } } as any, source, '\0vite/preload-helper.js');
+
+    expect(result).not.toBeNull();
+    expect(result.code).not.toContain('return "/"+dep');
+    expect(result.code).toContain("const assetsURL = function(dep) {");
+    expect(result.code).toMatch(/resourceBasePath-{{widget.wid}}/);
+    // Falls back to the configured base when the global isn't set
+    expect(result.code).toContain('|| "/"');
+  });
+
+  it('leaves non-preload-helper modules untouched in the transform hook', () => {
+    const plugin = myPlugin();
+    // @ts-expect-error calling the transform hook directly
+    const result = plugin.transform!.call(
+      { warn: () => { } } as any,
+      `const assetsURL = function(dep) { return "/"+dep };`,
+      '/src/some-user-module.ts',
+    );
+    expect(result).toBeNull();
   });
 
   it('warns when build.write is false, since writeBundle never runs in that flow', () => {
