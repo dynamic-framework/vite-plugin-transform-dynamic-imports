@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/compare/0.2.1...0.2.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* rewrite assetsURL before minification and warn on chunk-to-entry imports ([#9](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/issues/9)) ([a6fb6b9](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/commit/a6fb6b9732d268efcb5c2f2c947b6fee587f2dc5))
+
+
+### Chores
+
+* update vitest dependencies to version 4.1.11 ([#10](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/issues/10)) ([ced9efc](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/commit/ced9efcc32baa50a2677fd87b12d81a34eed2050))
+
 ## [0.2.1](https://github.com/dynamic-framework/vite-plugin-transform-dynamic-imports/compare/0.2.0...0.2.1) (2026-08-13)
 
 
